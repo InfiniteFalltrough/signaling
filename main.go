@@ -18,6 +18,8 @@ var upgrader = websocket.Upgrader{
 
 var clientsMutex sync.Mutex
 var clients = make(map[*websocket.Conn]bool)
+var roomsMutex sync.Mutex
+var rooms = make(map[string]map[*websocket.Conn]bool)
 
 func main() {
 	http.HandleFunc("/", HandleWebSocket)
@@ -40,11 +42,26 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientsMutex.Unlock()
 	}()
 
+	// Read room ID from the request
+	roomID := r.URL.Query().Get("room")
+
+	if roomID == "" {
+		fmt.Println("WS room ID not provided")
+		return
+	}
+
 	clientsMutex.Lock()
 	clients[conn] = true
 	clientsMutex.Unlock()
 
-	fmt.Println("WS connected")
+	roomsMutex.Lock()
+	if rooms[roomID] == nil {
+		rooms[roomID] = make(map[*websocket.Conn]bool)
+	}
+	rooms[roomID][conn] = true
+	roomsMutex.Unlock()
+
+	fmt.Printf("WS connected to room %s\n", roomID)
 
 	for {
 		messageType, message, err := conn.ReadMessage()
@@ -55,11 +72,11 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("WS received message: ", message)
 
 		// Handle received signaling message
-		HandleSignalingMessage(conn, messageType, message)
+		HandleSignalingMessage(roomID, conn, messageType, message)
 	}
 }
 
-func HandleSignalingMessage(sender *websocket.Conn, messageType int, message []byte) {
+func HandleSignalingMessage(roomID string, sender *websocket.Conn, messageType int, message []byte) {
 	clientsMutex.Lock()
 	defer clientsMutex.Unlock()
 
@@ -69,8 +86,10 @@ func HandleSignalingMessage(sender *websocket.Conn, messageType int, message []b
 	// Assuming the message is a JSON string with "type" field
 	// For example: {"type": "offer", "sdp": "SDP_OFFER_DATA"}
 	// You would parse the JSON and handle SDP offers and answers accordingly
-	// For simplicity, let's just broadcast the message to all clients
-	for client := range clients {
+	// For simplicity, let's just broadcast the message to all clients in the room
+	roomsMutex.Lock()
+	room := rooms[roomID]
+	for client := range room {
 		if isSame(sender, client) {
 			fmt.Println("WS ignoring same sender")
 		} else {
@@ -80,6 +99,7 @@ func HandleSignalingMessage(sender *websocket.Conn, messageType int, message []b
 			}
 		}
 	}
+	roomsMutex.Unlock()
 }
 
 func isSame(ws1, ws2 *websocket.Conn) bool {
